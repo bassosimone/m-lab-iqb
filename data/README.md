@@ -1,44 +1,52 @@
 # IQB Static Data Files
 
-This directory contains static measurement data used by
-the IQB prototype for Phase 1 development.
+This directory contains static reference data used by the IQB prototype.
 
 ## Current Dataset
 
-**Period**: October 2024 (2024-10-01 to 2024-10-31) and October 2025
+**Period**: October 2024 and October 2025
 
 **Source**: [M-Lab NDT](https://www.measurementlab.net/tests/ndt/) unified views
 
-**Countries**: all available countries
+**Countries**: All available countries
 
-### Files
+## Data Formats
 
-Generated files live inside [./cache/v0](./cache/v0).
+We maintain two data formats in `./cache/`:
 
-Here are some sample files:
+### v0 - JSON Format
 
-- `us_2024_10.json` - United States, ~31M download samples, ~24M upload samples
+Per-country JSON files with pre-aggregated percentiles:
 
-- `de_2024_10.json` - Germany, ~7M download samples, ~4M upload samples
+- **Location**: `./cache/v0/{country}_{year}_{month}.json`
+- **Example**: `us_2024_10.json` (~31M download samples, ~24M upload samples)
+- **Structure**: Simple JSON with percentiles (p1, p5, p10, p25, p50, p75, p90, p95, p99)
+- **Use case**: Casual data processing, backward compatibility, quick inspection
 
-- `br_2024_10.json` - Brazil, ~5M download samples, ~3M upload samples
-
-### Data Structure
-
-Each JSON file contains:
-
-```JavaScript
+```json
 {
   "metrics": {
-    "download_throughput_mbps": {"p1": 0.38, /* ... */, "p99": 891.82},
-    "upload_throughput_mbps": {"p1": 0.06, /* ... */, "p99": 813.73},
-    "latency_ms": {"p1": 0.16, /* ... */, "p99": 254.34},
-    "packet_loss": {"p1": 0.0, /* ... */, "p99": 0.25}
+    "download_throughput_mbps": {"p1": 0.38, "p99": 891.82},
+    "upload_throughput_mbps": {"p1": 0.06, "p99": 813.73},
+    "latency_ms": {"p1": 0.16, "p99": 254.34},
+    "packet_loss": {"p1": 0.0, "p99": 0.25}
   }
 }
 ```
 
-**Percentiles included**: p1, p5, p10, p25, p50, p75, p90, p95, p99
+### v1 - Parquet Format (Current)
+
+Raw query results stored efficiently for flexible analysis:
+
+- **Location**: `./cache/v1/{start_date}/{end_date}/{query_type}/`
+- **Files**:
+  - `data.parquet` - Query results (~1-60 MiB, streamable, chunked row groups)
+  - `stats.json` - Query metadata (start time, duration, bytes processed/billed, template hash)
+- **Use case**: Efficient filtering, large-scale analysis, direct PyArrow/Pandas processing
+
+**Migration**: We're transitioning to v1 as the primary format. v0 remains available for
+backward compatibility and casual use. If Parquet proves too heavy for some workflows,
+v0 will continue to be maintained.
 
 ## How This Data Was Generated
 
@@ -75,8 +83,8 @@ This orchestrates the complete pipeline:
 
 3. Merges the data into per-country JSON files
 
-Generated files `${country}_2024_10.json` and `${country}_2025_10.json`
-inside the [./cache/v0](./cache/v0) directory.
+Generated files: v0 JSON files `${country}_2024_10.json` and `${country}_2025_10.json`
+inside [./cache/v0](./cache/v0), plus v1 Parquet cache with query metadata.
 
 **Individual Pipeline Stages** (for debugging):
 
@@ -84,10 +92,14 @@ inside the [./cache/v0](./cache/v0) directory.
 cd data/
 
 # Stage 1a: Query downloads
-uv run python run_query.py query_downloads.sql -o downloads.json
+uv run python run_query.py downloads_by_country \
+  --start-date 2024-10-01 --end-date 2024-11-01 \
+  -o downloads.json
 
 # Stage 1b: Query uploads
-uv run python run_query.py query_uploads.sql -o uploads.json
+uv run python run_query.py uploads_by_country \
+  --start-date 2024-10-01 --end-date 2024-11-01 \
+  -o uploads.json
 
 # Stage 2: Merge data
 uv run python merge_data.py
@@ -97,15 +109,19 @@ uv run python merge_data.py
 
 - [generate_data.py](generate_data.py) - Orchestrates the complete pipeline
 
-- [run_query.py](run_query.py) - Executes a BigQuery query and saves results
+- [run_query.py](run_query.py) - Executes BigQuery queries using IQBPipeline,
+saves v1 cache (parquet + stats) and v0 JSON output
 
 - [merge_data.py](merge_data.py) - Merges download and upload data into
-per-country files
+per-country v0 files
 
 ## Notes
 
 - **Static data**: These files contain pre-aggregated percentiles
 for Phase 1 prototype. Phase 2 will add dynamic data fetching.
+
+- **Data formats**: v0 JSON files (~1.4KB) for quick analysis;
+v1 Parquet files (~1-60 MiB) with stats.json for efficient processing and cost tracking.
 
 - **Time granularity**: Data is aggregated over the entire
 months of October 2024 and October 2025. The analyst decides which
@@ -114,8 +130,9 @@ time window to use for running IQB calculations.
 - **Percentile selection**: The Streamlit UI allows users
 to select which percentile(s) to use for IQB score calculations.
 
-- **File size**: Each file is ~1.4KB (uncompressed). No
-compression needed.
+- **File size**: Each per-country JSON file is ~1.4KB (uncompressed). No
+compression needed. For more fine grained queries, the Parquet files
+allow for more efficient storage and data processing.
 
 ## M-Lab NDT Data Schema
 
@@ -142,12 +159,8 @@ for details.
 
 ## Future Improvements (Phase 2+)
 
-- Dynamic data fetching from BigQuery
-
-- Support for additional datasets (Ookla, Cloudflare)
-
+- Direct Parquet reading in cache.py (PyArrow predicate pushdown for efficient filtering)
+- Additional datasets (Ookla, Cloudflare)
+- Finer geographic resolution (cities, provinces, ASNs)
 - Finer time granularity (daily, weekly)
-
-- Sub-national geographic resolution (cities, ASNs)
-
-- Local database integration for caching aggregated data
+- Remote storage for v1 cache (GitHub releases, GCS buckets)
